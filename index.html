@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>.</title>
+<style>
+:root { color-scheme: dark; }
+html, body { height: 100%; margin: 0; background: #0b0b0c; color: #e8e8ea; font-family: -apple-system, system-ui, sans-serif; }
+body { display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+.box { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 12px; text-align: center; }
+input { font-size: 16px; padding: 14px 16px; border-radius: 12px; border: 1px solid #2a2a2e; background: #151517; color: inherit; outline: none; text-align: center; }
+input:focus { border-color: #4a4a52; }
+a.go { display: block; padding: 14px 16px; border-radius: 12px; background: #2b6cff; color: #fff; text-decoration: none; font-size: 16px; }
+.err { height: 18px; font-size: 13px; color: #ff6b6b; }
+</style>
+</head>
+<body>
+<div class="box" id="box">
+  <input id="pw" type="password" autocomplete="off" autocapitalize="off" aria-label="password">
+  <div class="err" id="err"></div>
+</div>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+const ITER = 250000;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function b64enc(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+function b64dec(s) {
+  const bin = atob(s);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+async function deriveKey(pw, salt) {
+  const km = await crypto.subtle.importKey("raw", enc.encode(pw), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: ITER, hash: "SHA-256" },
+    km,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptText(pw, text) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pw, salt);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(text)));
+  const out = new Uint8Array(28 + ct.length);
+  out.set(salt, 0);
+  out.set(iv, 16);
+  out.set(ct, 28);
+  return b64enc(out);
+}
+
+async function decryptText(pw, data) {
+  const raw = b64dec(data);
+  const key = await deriveKey(pw, raw.slice(0, 16));
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: raw.slice(16, 28) }, key, raw.slice(28));
+  return dec.decode(pt);
+}
+
+
+const DATA = "5DynLjbuaSwOjXcPNEcx7t9qei/O5dHUQQdkfE0fo3UOYoKAcJd6xFo2e/fSu0/lnq8XBQ6ztrzmlw3YqMTs/lpdV6Ut+x+pvow=";
+const tg = window.Telegram && window.Telegram.WebApp;
+try { if (tg) { tg.ready(); tg.expand(); } } catch (e) {}
+
+const pw = document.getElementById("pw");
+const err = document.getElementById("err");
+const box = document.getElementById("box");
+let busy = false;
+
+function openLink(url) {
+  try {
+    if (tg && /^https:\/\/t\.me\//i.test(url) && tg.openTelegramLink) { tg.openTelegramLink(url); return true; }
+    if (tg && tg.openLink) { tg.openLink(url); return true; }
+  } catch (e) {}
+  return false;
+}
+
+async function tryUnlock() {
+  if (busy || !pw.value) return;
+  busy = true;
+  err.textContent = "";
+  try {
+    const url = (await decryptText(pw.value.trim(), DATA)).trim();
+    if (!/^(https?:\/\/|tg:\/\/)/i.test(url)) throw new Error("bad url");
+    box.innerHTML = "";
+    const a = document.createElement("a");
+    a.className = "go";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Открыть";
+    a.addEventListener("click", function (ev) { if (openLink(url)) ev.preventDefault(); });
+    box.appendChild(a);
+  } catch (e) {
+    err.textContent = "Неверно";
+    pw.value = "";
+    await new Promise(function (r) { setTimeout(r, 700); });
+  }
+  busy = false;
+}
+
+pw.addEventListener("keydown", function (ev) { if (ev.key === "Enter") tryUnlock(); });
+</script>
+</body>
+</html>
